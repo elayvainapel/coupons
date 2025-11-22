@@ -165,29 +165,65 @@ struct ContentView: View {
         NavigationStack {
             ZStack {
                 Color(.systemGroupedBackground).ignoresSafeArea()
-                VStack(spacing: 16) {
-                    ScrollView {
-                        VStack(spacing: 16) {
-                            headerCard
-                            totalsCard
-                            if viewModel.discounts.isEmpty {
-                                emptyState
-                            }
+                List {
+                    // Top section: header + totals + (optional) empty state
+                    Section {
+                        headerCard
+                            .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 0, trailing: 16))
+                            .listRowBackground(Color.clear)
+                        totalsCard
+                            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                            .listRowBackground(Color.clear)
+                        if viewModel.discounts.isEmpty {
+                            emptyState
+                                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 12, trailing: 16))
+                                .listRowBackground(Color.clear)
                         }
-                        .padding(.horizontal)
-                        .padding(.top)
                     }
-                    .scrollIndicators(.never)
-                    
-                    if !viewModel.discounts.isEmpty {
-                        discountsList
+                    .textCase(nil)
+
+                    // Groups sections
+                    let groups = buildGroups(discounts: viewModel.discounts, categories: viewModel.categories)
+                    ForEach(groups, id: \.title) { group in
+                        GroupSectionView(
+                            group: group,
+                            currencySymbol: { viewModel.currencySymbol(for: $0) },
+                            onEdit: { discount in
+                                discountToEdit = discount
+                            },
+                            onDelete: { discount in
+                                viewModel.delete(discount)
+                            },
+                            onUse: { discount in
+                                discountToUse = discount
+                                showingUseSheet = true
+                            },
+                            onShowLarge: { discount in
+                                discountToShowNumber = discount
+                            },
+                            onDropToGroup: { sourceIDString, destinationTitle in
+                                handleDrop(from: sourceIDString, to: destinationTitle)
+                            },
+                            onDropToGroupAtIndex: { destinationTitle, index, sourceIDString in
+                                handleDropIntoGroup(sourceIDString: sourceIDString, destinationTitle: destinationTitle, destinationIndex: index)
+                            },
+                            onMoveInGroup: { title, source, dest in
+                                moveInCategory(title: title, from: source, to: dest)
+                            }
+                        )
                     }
 
-                    // Bottom add button
-                    addButton
-                        .padding(.horizontal)
-                        .padding(.bottom)
+                    // Bottom add button row
+                    Section {
+                        addButton
+                            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 16, trailing: 16))
+                            .listRowBackground(Color.clear)
+                    }
+                    .textCase(nil)
                 }
+                .listStyle(.insetGrouped)
+                .scrollContentBackground(.hidden)
+                .background(Color.clear)
             }
             .navigationTitle("Coupons")
             .toolbar {
@@ -258,6 +294,7 @@ struct ContentView: View {
                 )
             }
         }
+        .environmentObject(viewModel)
     }
 
     private func handleDrop(from sourceIDString: String, to destinationTitle: String) {
@@ -436,6 +473,7 @@ struct ContentView: View {
                 moveInCategory(title: title, from: source, to: dest)
             }
         )
+        .environmentObject(viewModel)
     }
     
     private func buildGroups(discounts: [Discount], categories: [String]) -> [(title: String, items: [Discount])] {
@@ -447,23 +485,24 @@ struct ContentView: View {
 
         var result: [(String, [Discount])] = []
 
-        // Helper to sort items by name (case-insensitive)
-        func sortedByName(_ items: [Discount]) -> [Discount] {
-            items.sorted { lhs, rhs in
-                lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
-            }
-        }
-
         // Add known categories in provided order
         for cat in categories {
-            if let items = byCategory[cat], !items.isEmpty {
-                result.append((cat, sortedByName(items)))
+            let itemsInOrder = discounts.filter { (d) in
+                let key = (d.category?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty ? "Uncategorized" : d.category!.trimmingCharacters(in: .whitespacesAndNewlines)
+                return key == cat
+            }
+            if !itemsInOrder.isEmpty {
+                result.append((cat, itemsInOrder))
             }
         }
 
         // Add Uncategorized last if present
-        if let unc = byCategory["Uncategorized"], !unc.isEmpty {
-            result.append(("Uncategorized", sortedByName(unc)))
+        let uncInOrder = discounts.filter { (d) in
+            let key = (d.category?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty ? "Uncategorized" : d.category!.trimmingCharacters(in: .whitespacesAndNewlines)
+            return key == "Uncategorized"
+        }
+        if !uncInOrder.isEmpty {
+            result.append(("Uncategorized", uncInOrder))
         }
 
         // Add any remaining categories not in the managed list, sorted by name
@@ -472,8 +511,12 @@ struct ContentView: View {
         }.sorted()
 
         for cat in remainingCats {
-            if let items = byCategory[cat], !items.isEmpty {
-                result.append((cat, sortedByName(items)))
+            let itemsInOrder = discounts.filter { (d) in
+                let key = (d.category?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty ? "Uncategorized" : d.category!.trimmingCharacters(in: .whitespacesAndNewlines)
+                return key == cat
+            }
+            if !itemsInOrder.isEmpty {
+                result.append((cat, itemsInOrder))
             }
         }
 
@@ -526,6 +569,8 @@ private struct DiscountsListView: View {
     let onDropToGroupAtIndex: (String, Int, String) -> Void
     let onMoveInGroup: (String, IndexSet, Int) -> Void
 
+    @EnvironmentObject var viewModel: DiscountViewModel
+
     var body: some View {
         List {
             ForEach(groups, id: \.title) { group in
@@ -559,6 +604,8 @@ private struct GroupSectionView: View {
     let onDropToGroupAtIndex: (String, Int, String) -> Void
     let onMoveInGroup: (String, IndexSet, Int) -> Void
 
+    @EnvironmentObject var viewModel: DiscountViewModel
+
     var body: some View {
         Section(header:
             Text(group.title)
@@ -569,49 +616,44 @@ private struct GroupSectionView: View {
                 DiscountRowContainer(
                     discount: discount,
                     symbol: currencySymbol(discount.currency),
+                    groupTitle: group.title,
+                    viewModel: viewModel,
                     onEdit: onEdit,
                     onDelete: onDelete,
                     onUse: onUse,
-                    onShowLarge: onShowLarge
+                    onShowLarge: onShowLarge,
+                    onDropToGroupTitle: onDropToGroup
                 )
-            }
-            .onInsert(of: [UTType.text]) { index, providers in
-                guard let provider = providers.first else { return }
-                _ = provider.loadObject(ofClass: NSString.self) { object, _ in
-                    if let nsString = object as? NSString {
-                        let idString = nsString as String
-                        DispatchQueue.main.async {
-                            onDropToGroupAtIndex(group.title, index, idString)
-                        }
-                    }
-                }
             }
             .onMove { indices, newOffset in
                 onMoveInGroup(group.title, indices, newOffset)
             }
         }
-        .onDrop(of: [UTType.text], isTargeted: nil) { providers in
+        .onDrop(of: [UTType.plainText], isTargeted: nil, perform: { providers in
             guard let provider = providers.first else { return false }
             _ = provider.loadObject(ofClass: NSString.self) { object, _ in
                 if let nsString = object as? NSString {
                     let idString = nsString as String
                     DispatchQueue.main.async {
-                        onDropToGroup(idString, group.title)
+                        onDropToGroup(group.title, idString)
                     }
                 }
             }
             return true
-        }
+        })
     }
 }
 
 private struct DiscountRowContainer: View {
     let discount: Discount
     let symbol: String
+    let groupTitle: String
+    let viewModel: DiscountViewModel
     let onEdit: (Discount) -> Void
     let onDelete: (Discount) -> Void
     let onUse: (Discount) -> Void
     let onShowLarge: (Discount) -> Void
+    let onDropToGroupTitle: (String, String) -> Void
 
     var body: some View {
         HStack(alignment: .center) {
@@ -637,6 +679,18 @@ private struct DiscountRowContainer: View {
             .tint(.blue)
         }
         .onDrag { NSItemProvider(object: discount.id.uuidString as NSString) }
+        .onDrop(of: [UTType.plainText], isTargeted: nil, perform: { providers in
+            guard let provider = providers.first else { return false }
+            _ = provider.loadObject(ofClass: NSString.self) { object, _ in
+                if let nsString = object as? NSString {
+                    let idString = nsString as String
+                    DispatchQueue.main.async {
+                        onDropToGroupTitle(groupTitle, idString)
+                    }
+                }
+            }
+            return true
+        })
     }
 }
 
