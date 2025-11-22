@@ -29,7 +29,6 @@ final class DiscountViewModel: ObservableObject {
         didSet { saveCurrency() }
     }
     
-    @Published var showCurrencySettings: Bool = false
     @Published var editingDiscount: Discount? = nil
     
     @Published var categories: [String] = [] {
@@ -53,11 +52,43 @@ final class DiscountViewModel: ObservableObject {
     private let discountsKey = "discounts"
     private let currencyKey = "defaultCurrency"
     private let categoriesKey = "categories"
+
+    // iCloud KVS store
+    private let kvs = NSUbiquitousKeyValueStore.default
+
+    private var cancellables: Set<AnyCancellable> = []
     
     init() {
+        // Load from local cache first
         loadCurrency()
         loadDiscounts()
         loadCategories()
+
+        // Pull from iCloud if available (will override local cache when newer)
+        synchronizeFromCloud()
+
+        // Observe iCloud changes
+        NotificationCenter.default.addObserver(
+            forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
+            object: kvs,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self else { return }
+            self.handleKVSChange(notification: notification)
+        }
+
+        // Keep KVS active
+        kvs.synchronize()
+
+        // Also observe app becoming active to refresh
+        NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.kvs.synchronize()
+            self?.pullFromCloud()
+        }
+    }
+    
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
     
     func currencySymbol(for code: String) -> String {
@@ -113,18 +144,23 @@ final class DiscountViewModel: ObservableObject {
         }
     }
     
-    // MARK: - Persistence
+    // MARK: - Persistence (Local + iCloud)
     
     private func loadDiscounts() {
-        guard let data = UserDefaults.standard.data(forKey: discountsKey) else { return }
-        if let decoded = try? JSONDecoder().decode([Discount].self, from: data) {
+        // Local cache first
+        if let data = UserDefaults.standard.data(forKey: discountsKey),
+           let decoded = try? JSONDecoder().decode([Discount].self, from: data) {
             discounts = decoded
         }
     }
     
     private func saveDiscounts() {
+        // Save to local cache
         if let data = try? JSONEncoder().encode(discounts) {
             UserDefaults.standard.set(data, forKey: discountsKey)
+            // Push to iCloud
+            kvs.set(data, forKey: discountsKey)
+            kvs.synchronize()
         }
     }
     
@@ -136,6 +172,8 @@ final class DiscountViewModel: ObservableObject {
     
     private func saveCurrency() {
         UserDefaults.standard.set(defaultCurrency, forKey: currencyKey)
+        kvs.set(defaultCurrency, forKey: currencyKey)
+        kvs.synchronize()
     }
     
     private func loadCategories() {
@@ -147,6 +185,37 @@ final class DiscountViewModel: ObservableObject {
     }
     private func saveCategories() {
         UserDefaults.standard.set(categories, forKey: categoriesKey)
+        kvs.set(categories, forKey: categoriesKey)
+        kvs.synchronize()
+    }
+
+    // MARK: - iCloud KVS helpers
+    private func synchronizeFromCloud() {
+        kvs.synchronize()
+        pullFromCloud()
+    }
+
+    private func pullFromCloud() {
+        // Discounts
+        if let cloudData = kvs.data(forKey: discountsKey),
+           let cloudDiscounts = try? JSONDecoder().decode([Discount].self, from: cloudData) {
+            if cloudDiscounts != self.discounts {
+                self.discounts = cloudDiscounts
+            }
+        }
+        // Currency
+        if let cloudCurrency = kvs.string(forKey: currencyKey), cloudCurrency != self.defaultCurrency {
+            self.defaultCurrency = cloudCurrency
+        }
+        // Categories
+        if let cloudCategories = kvs.array(forKey: categoriesKey) as? [String], cloudCategories != self.categories {
+            self.categories = cloudCategories
+        }
+    }
+
+    private func handleKVSChange(notification: Notification) {
+        // When changes arrive from iCloud, pull and merge
+        pullFromCloud()
     }
 }
 
@@ -160,6 +229,16 @@ struct ContentView: View {
     @State private var discountToUse: Discount? = nil
 
     @State private var discountToShowNumber: Discount? = nil
+
+    @State private var showSettings: Bool = false
+    
+    private var listOrderVersion: Int {
+        var hash = 5381
+        for d in viewModel.discounts {
+            hash = (hash &* 33) &+ d.id.hashValue
+        }
+        return hash
+    }
     
     var body: some View {
         NavigationStack {
@@ -187,6 +266,7 @@ struct ContentView: View {
                     ForEach(groups, id: \.title) { group in
                         GroupSectionView(
                             group: group,
+                            sectionID: sectionVersion(for: group.title),
                             currencySymbol: { viewModel.currencySymbol(for: $0) },
                             onEdit: { discount in
                                 discountToEdit = discount
@@ -212,26 +292,24 @@ struct ContentView: View {
                             }
                         )
                     }
-
-                    // Bottom add button row
-                    Section {
-                        addButton
-                            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 16, trailing: 16))
-                            .listRowBackground(Color.clear)
-                    }
-                    .textCase(nil)
                 }
                 .listStyle(.insetGrouped)
                 .scrollContentBackground(.hidden)
                 .background(Color.clear)
+                .animation(.snappy, value: viewModel.discounts)
+                .safeAreaInset(edge: .bottom) {
+                    addButton
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                        .background(
+                            Color(.systemGroupedBackground).ignoresSafeArea()
+                        )
+                }
             }
             .navigationTitle("Coupons")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     EditButton()
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    toolbarCurrencyButton
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
@@ -240,10 +318,13 @@ struct ContentView: View {
                         Label("Categories", systemImage: "folder")
                     }
                 }
-            }
-            // Currency settings sheet
-            .sheet(isPresented: $viewModel.showCurrencySettings) {
-                CurrencySettingsView(viewModel: viewModel)
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showSettings.toggle()
+                    } label: {
+                        Label("Settings", systemImage: "gearshape")
+                    }
+                }
             }
             // Categories settings sheet
             .sheet(isPresented: $viewModel.showCategoriesSettings) {
@@ -293,57 +374,63 @@ struct ContentView: View {
                     }
                 )
             }
+            .sheet(isPresented: $showSettings) {
+                SettingsView(viewModel: viewModel)
+            }
         }
         .environmentObject(viewModel)
     }
 
-    private func handleDrop(from sourceIDString: String, to destinationTitle: String) {
+    @MainActor private func handleDrop(from sourceIDString: String, to destinationTitle: String) {
         guard let sourceID = UUID(uuidString: sourceIDString) else { return }
         // Find source index
         guard let sourceIndex = viewModel.discounts.firstIndex(where: { $0.id == sourceID }) else { return }
-        var item = viewModel.discounts.remove(at: sourceIndex)
-        // Determine new category from destination; Uncategorized means no category
-        let newCategoryName = destinationTitle
-        item.category = (newCategoryName == "Uncategorized") ? nil : newCategoryName
-        // Append to end of destination group order
-        // Compute index to insert: after last item in that category
-        var insertIndex = viewModel.discounts.endIndex
-        let targetKey = item.category ?? "Uncategorized"
-        if let lastIndexInCategory = viewModel.discounts.lastIndex(where: { ($0.category ?? "Uncategorized") == targetKey }) {
-            insertIndex = viewModel.discounts.index(after: lastIndexInCategory)
+        withAnimation {
+            var item = viewModel.discounts.remove(at: sourceIndex)
+            // Determine new category from destination; Uncategorized means no category
+            let newCategoryName = destinationTitle
+            item.category = (newCategoryName == "Uncategorized") ? nil : newCategoryName
+            // Append to end of destination group order
+            // Compute index to insert: after last item in that category
+            var insertIndex = viewModel.discounts.endIndex
+            let targetKey = item.category ?? "Uncategorized"
+            if let lastIndexInCategory = viewModel.discounts.lastIndex(where: { ($0.category ?? "Uncategorized") == targetKey }) {
+                insertIndex = viewModel.discounts.index(after: lastIndexInCategory)
+            }
+            viewModel.discounts.insert(item, at: insertIndex)
         }
-        viewModel.discounts.insert(item, at: insertIndex)
     }
     
-    private func handleDropIntoGroup(sourceIDString: String, destinationTitle: String, destinationIndex: Int) {
+    @MainActor private func handleDropIntoGroup(sourceIDString: String, destinationTitle: String, destinationIndex: Int) {
         guard let sourceID = UUID(uuidString: sourceIDString) else { return }
         guard let sourceIndex = viewModel.discounts.firstIndex(where: { $0.id == sourceID }) else { return }
-        var item = viewModel.discounts.remove(at: sourceIndex)
-        // Update category according to destination section (nil for Uncategorized)
-        let newCategoryName = destinationTitle
-        item.category = (newCategoryName == "Uncategorized") ? nil : newCategoryName
-        // Compute the flat insertion index in the master discounts array corresponding to the destination section and index
-        // Find the indices of items that belong to the target category in the current discounts array
-        let targetKey = item.category ?? "Uncategorized"
-        // Build a list of indices of items in the target category
-        let targetIndices = viewModel.discounts.enumerated().filter { (_, d) in
-            (d.category ?? "Uncategorized") == targetKey
-        }.map { $0.offset }
-        var insertIndex: Int
-        if targetIndices.isEmpty {
-            // No items in target category yet: append to end
-            insertIndex = viewModel.discounts.endIndex
-        } else if destinationIndex <= 0 {
-            insertIndex = targetIndices.first!
-        } else if destinationIndex >= targetIndices.count {
-            insertIndex = targetIndices.last! + 1
-        } else {
-            insertIndex = targetIndices[destinationIndex]
+        withAnimation {
+            var item = viewModel.discounts.remove(at: sourceIndex)
+            // Update category according to destination section (nil for Uncategorized)
+            let newCategoryName = destinationTitle
+            item.category = (newCategoryName == "Uncategorized") ? nil : newCategoryName
+            // Compute the flat insertion index in the master discounts array corresponding to the destination section and index
+            let targetKey = item.category ?? "Uncategorized"
+            // Build a list of indices of items in the target category
+            let targetIndices = viewModel.discounts.enumerated().filter { (_, d) in
+                (d.category ?? "Uncategorized") == targetKey
+            }.map { $0.offset }
+            var insertIndex: Int
+            if targetIndices.isEmpty {
+                // No items in target category yet: append to end
+                insertIndex = viewModel.discounts.endIndex
+            } else if destinationIndex <= 0 {
+                insertIndex = targetIndices.first!
+            } else if destinationIndex >= targetIndices.count {
+                insertIndex = targetIndices.last! + 1
+            } else {
+                insertIndex = targetIndices[destinationIndex]
+            }
+            viewModel.discounts.insert(item, at: insertIndex)
         }
-        viewModel.discounts.insert(item, at: insertIndex)
     }
 
-    private func moveInCategory(title: String, from source: IndexSet, to destination: Int) {
+    @MainActor private func moveInCategory(title: String, from source: IndexSet, to destination: Int) {
         // Determine the key used in the array (nil for Uncategorized)
         let targetKey: String? = (title == "Uncategorized") ? nil : title
         // Collect indices of items in that category
@@ -361,7 +448,9 @@ struct ContentView: View {
         } else {
             destGlobal = indices[destination]
         }
-        viewModel.discounts.move(fromOffsets: sourceGlobal, toOffset: destGlobal)
+        withAnimation {
+            viewModel.discounts.move(fromOffsets: sourceGlobal, toOffset: destGlobal)
+        }
     }
     
     // MARK: - Subviews
@@ -523,6 +612,16 @@ struct ContentView: View {
         return result
     }
     
+    private func sectionVersion(for title: String) -> Int {
+        let items = viewModel.discounts.filter { ($0.category ?? "Uncategorized") == title }
+        var hash = 5381
+        for d in items {
+            hash = (hash &* 33) &+ d.id.hashValue
+            hash = (hash &* 33) &+ d.number.hashValue
+        }
+        return hash
+    }
+    
     private var addButton: some View {
         Button {
             discountToEdit = nil
@@ -544,18 +643,6 @@ struct ContentView: View {
         }
         .padding(.top, 4)
     }
-    
-    private var toolbarCurrencyButton: some View {
-        Button {
-            viewModel.showCurrencySettings.toggle()
-        } label: {
-            HStack(spacing: 4) {
-                Text(viewModel.currencySymbol(for: viewModel.defaultCurrency))
-                Text("Currency")
-            }
-            .foregroundStyle(.primary)
-        }
-    }
 }
 
 private struct DiscountsListView: View {
@@ -576,6 +663,7 @@ private struct DiscountsListView: View {
             ForEach(groups, id: \.title) { group in
                 GroupSectionView(
                     group: group,
+                    sectionID: 0,
                     currencySymbol: currencySymbol,
                     onEdit: onEdit,
                     onDelete: onDelete,
@@ -595,6 +683,7 @@ private struct DiscountsListView: View {
 
 private struct GroupSectionView: View {
     let group: (title: String, items: [Discount])
+    let sectionID: Int
     let currencySymbol: (String) -> String
     let onEdit: (Discount) -> Void
     let onDelete: (Discount) -> Void
@@ -629,6 +718,7 @@ private struct GroupSectionView: View {
                 onMoveInGroup(group.title, indices, newOffset)
             }
         }
+        .id(sectionID)
         .onDrop(of: [UTType.plainText], isTargeted: nil, perform: { providers in
             guard let provider = providers.first else { return false }
             _ = provider.loadObject(ofClass: NSString.self) { object, _ in
@@ -679,18 +769,6 @@ private struct DiscountRowContainer: View {
             .tint(.blue)
         }
         .onDrag { NSItemProvider(object: discount.id.uuidString as NSString) }
-        .onDrop(of: [UTType.plainText], isTargeted: nil, perform: { providers in
-            guard let provider = providers.first else { return false }
-            _ = provider.loadObject(ofClass: NSString.self) { object, _ in
-                if let nsString = object as? NSString {
-                    let idString = nsString as String
-                    DispatchQueue.main.async {
-                        onDropToGroupTitle(groupTitle, idString)
-                    }
-                }
-            }
-            return true
-        })
     }
 }
 
@@ -761,31 +839,6 @@ struct DiscountRow: View {
     }
 }
 
-struct CurrencySettingsView: View {
-    @ObservedObject var viewModel: DiscountViewModel
-    @Environment(\.dismiss) private var dismiss
-    
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section("Default Currency") {
-                    Picker("Default Currency", selection: $viewModel.defaultCurrency) {
-                        ForEach(viewModel.currencies) { currency in
-                            Text("\(currency.symbol) \(currency.name) (\(currency.code))")
-                                .tag(currency.code)
-                        }
-                    }
-                }
-            }
-            .navigationTitle("Currency Settings")
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button("Done") { dismiss() }
-                }
-            }
-        }
-    }
-}
 struct DiscountFormView: View {
     @ObservedObject var viewModel: DiscountViewModel
     var existingDiscount: Discount?
@@ -1065,3 +1118,25 @@ struct CategoriesSettingsView: View {
     }
 }
 
+struct SettingsView: View {
+    @ObservedObject var viewModel: DiscountViewModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Default Currency") {
+                    Picker("Default Currency", selection: $viewModel.defaultCurrency) {
+                        ForEach(viewModel.currencies) { currency in
+                            Text("\(currency.symbol) \(currency.name) (\(currency.code))").tag(currency.code)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Settings")
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) { Button("Done") { dismiss() } }
+            }
+        }
+    }
+}
