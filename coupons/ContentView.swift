@@ -1800,6 +1800,7 @@ struct DiscountFormView: View {
     @State private var selectedListID: UUID? = nil
 
     @State private var showPro: Bool = false
+    @State private var showDuplicateConfirmation: Bool = false
 
     var isEditing: Bool { existingDiscount != nil }
 
@@ -1939,6 +1940,37 @@ struct DiscountFormView: View {
                         )
                     }
                 }
+                
+                // Duplicate buttons section (only when editing)
+                if isEditing {
+                    Section("Duplicate") {
+                        HStack(spacing: 12) {
+                            Button {
+                                duplicateFull()
+                            } label: {
+                                HStack {
+                                    Image(systemName: "doc.on.doc.fill")
+                                    Text("Full Duplicate")
+                                }
+                                .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(.blue)
+                            
+                            Button {
+                                duplicatePartial()
+                            } label: {
+                                HStack {
+                                    Image(systemName: "doc.on.doc")
+                                    Text("Duplicate")
+                                }
+                                .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(.purple)
+                        }
+                    }
+                }
             }
             .navigationTitle(isEditing ? "Edit Coupon" : "New Coupon")
             .toolbar {
@@ -1969,7 +2001,84 @@ struct DiscountFormView: View {
                 }
                 .environmentObject(viewModel)
             }
+            .alert("Coupon Duplicated", isPresented: $showDuplicateConfirmation) {
+                Button("OK", role: .cancel) {
+                    dismiss()
+                    onClose()
+                }
+            } message: {
+                Text("A new coupon has been created successfully.")
+            }
         }
+    }
+    
+    private func duplicateFull() {
+        guard let destListID = selectedListID else { return }
+        
+        if !viewModel.isProUnlocked {
+            let currentCount = viewModel.loadDiscounts(for: destListID).count
+            if currentCount >= 8 {
+                showPro = true
+                return
+            }
+        }
+        
+        let amount = Double(amountString)
+        let finalExpiration = hasExpiration ? expirationDate : nil
+        let trimmedCategory = category.trimmingCharacters(in: .whitespacesAndNewlines)
+        let finalCategory = trimmedCategory.isEmpty ? nil : trimmedCategory
+        let trimmedType = type.trimmingCharacters(in: .whitespacesAndNewlines)
+        let finalType = trimmedType.isEmpty ? nil : trimmedType
+        
+        let duplicate = Discount(
+            id: UUID(),
+            name: name,
+            number: number,
+            amountLeft: amount,
+            currency: currency,
+            descriptionText: descriptionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : descriptionText,
+            createdAt: Date(),
+            expirationDate: finalExpiration,
+            category: finalCategory,
+            type: finalType
+        )
+        
+        viewModel.addDiscount(duplicate, to: destListID)
+        showDuplicateConfirmation = true
+    }
+    
+    private func duplicatePartial() {
+        guard let destListID = selectedListID else { return }
+        
+        if !viewModel.isProUnlocked {
+            let currentCount = viewModel.loadDiscounts(for: destListID).count
+            if currentCount >= 8 {
+                showPro = true
+                return
+            }
+        }
+        
+        let finalExpiration = hasExpiration ? expirationDate : nil
+        let trimmedCategory = category.trimmingCharacters(in: .whitespacesAndNewlines)
+        let finalCategory = trimmedCategory.isEmpty ? nil : trimmedCategory
+        let trimmedType = type.trimmingCharacters(in: .whitespacesAndNewlines)
+        let finalType = trimmedType.isEmpty ? nil : trimmedType
+        
+        let duplicate = Discount(
+            id: UUID(),
+            name: name,
+            number: "",  // Empty code/number
+            amountLeft: nil,  // No amount
+            currency: currency,
+            descriptionText: descriptionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : descriptionText,
+            createdAt: Date(),
+            expirationDate: finalExpiration,
+            category: finalCategory,
+            type: finalType
+        )
+        
+        viewModel.addDiscount(duplicate, to: destListID)
+        showDuplicateConfirmation = true
     }
 
     private var canSave: Bool {
@@ -2150,6 +2259,7 @@ struct LargeNumberView: View {
     let discount: Discount?
     var onClose: () -> Void
     @Environment(\.dismiss) private var dismiss
+    @State private var showCopiedFeedback: Bool = false
     
     var body: some View {
         NavigationStack {
@@ -2178,7 +2288,37 @@ struct LargeNumberView: View {
                                     .fill(.regularMaterial)
                             )
                             .padding(.horizontal)
+                            .onLongPressGesture {
+                                UIPasteboard.general.string = number
+                                showCopiedFeedback = true
+                                // Haptic feedback
+                                let generator = UIImpactFeedbackGenerator(style: .medium)
+                                generator.impactOccurred()
+                                // Hide feedback after 2 seconds
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                                    showCopiedFeedback = false
+                                }
+                            }
+                            .accessibilityHint("Long press to copy to clipboard")
                     }
+                    
+                    if showCopiedFeedback {
+                        HStack(spacing: 8) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                            Text("Copied to clipboard")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(
+                            Capsule()
+                                .fill(.regularMaterial)
+                        )
+                        .transition(.scale.combined(with: .opacity))
+                    }
+                    
                     if let desc = discount?.descriptionText, !desc.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         Text(desc)
                             .font(.body)
@@ -2198,6 +2338,7 @@ struct LargeNumberView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                .animation(.spring(duration: 0.3), value: showCopiedFeedback)
             }
             .navigationTitle(discount?.name ?? "")
             .toolbar {
@@ -2774,7 +2915,6 @@ private struct ListRowView: View {
     }
     
     private var smartListCount: Int {
-        let allIDs = listsVM.lists.map { $0.id }
         var idToListName: [UUID: String] = [:]
         var allDiscounts: [Discount] = []
         for l in listsVM.lists {
