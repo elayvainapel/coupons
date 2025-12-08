@@ -2479,220 +2479,25 @@ struct ListsManagerView: View {
         endPoint: .bottomTrailing
     )
 
-    private static let iconChoicesA: [String] = [
+    static let iconChoicesA: [String] = [
         "list.bullet", "tag", "tag.circle", "tag.square", "gift", "gift.circle", "cart", "cart.fill", "cart.badge.plus", "cart.badge.minus",
         "bag", "bag.fill", "bag.badge.plus", "bag.badge.minus", "creditcard", "creditcard.fill", "wallet.pass", "wallet.pass.fill",
         "ticket", "ticket.fill", "barcode", "qrcode", "dollarsign.circle", "dollarsign.square", "banknote", "percent"
     ]
-    private static let iconChoicesB: [String] = [
+    static let iconChoicesB: [String] = [
         "shippingbox", "shippingbox.fill", "cube", "cube.box", "purchased", "star", "star.fill", "heart", "heart.fill",
         "bookmark", "bookmark.fill", "calendar", "calendar.badge.plus", "tray", "tray.full", "tray.and.arrow.down",
         "folder", "folder.fill", "folder.badge.plus", "archivebox", "archivebox.fill"
     ]
-    private static let iconChoices: [String] = iconChoicesA + iconChoicesB
+    static let iconChoices: [String] = iconChoicesA + iconChoicesB
 
     var body: some View {
         NavigationStack {
             Form {
-                if !viewModel.isProUnlocked {
-                    Section {
-                        HStack {
-                            Spacer()
-                            VStack(spacing: 12) {
-                                Image(systemName: "crown.fill")
-                                    .font(.system(size: 60))
-                                    .foregroundStyle(.yellow)
-                                Text("Pro Feature")
-                                    .font(.title3.bold())
-                                Text("Upgrade to Pro to manage lists")
-                                    .multilineTextAlignment(.center)
-                                    .foregroundColor(.secondary)
-                            }
-                            Spacer()
-                        }
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            showPro = true
-                        }
-                    }
-                }
-                Section {
-                    Button {
-                        if !viewModel.isProUnlocked {
-                            showPro = true
-                            return
-                        }
-                        withAnimation { showCreate.toggle() }
-                    } label: {
-                        Label(showCreate ? "Hide New List" : "New List", systemImage: showCreate ? "chevron.down.circle" : "plus.circle")
-                    }
-                }
-
-                if showCreate && viewModel.isProUnlocked {
-                    Section("Create New List") {
-                        TextField("Name", text: $newName)
-                        ColorPicker("Color", selection: $newColor, supportsOpacity: false)
-                        Picker("Icon", selection: $newIcon) {
-                            ForEach(Self.iconChoices, id: \.self) { name in
-                                Label { Text(name) } icon: { Image.systemSymbolPreferringFill(name) }
-                                    .tag(name)
-                            }
-                        }
-                        Toggle("Smart List", isOn: $isCreatingSmart)
-                        if isCreatingSmart {
-                            NavigationLink("Edit Smart Conditions") {
-                                let proxy = Binding<ListInfo>(
-                                    get: {
-                                        ListInfo(name: newName.isEmpty ? "New List" : newName, color: newColor, iconName: newIcon, isDefault: false, isSmart: true, smartMatchAll: creatingSmartMatchAll, smartConditions: creatingSmartConditions)
-                                    },
-                                    set: { updated in
-                                        creatingSmartMatchAll = updated.smartMatchAll
-                                        creatingSmartConditions = updated.smartConditions
-                                    }
-                                )
-                                SmartListEditorView(list: proxy, onSave: nil)
-                            }
-                        }
-                        Button("Add List") {
-                            let info = ListInfo(name: newName.trimmingCharacters(in: .whitespacesAndNewlines), color: newColor, iconName: newIcon, isDefault: false, isSmart: isCreatingSmart, smartMatchAll: creatingSmartMatchAll, smartConditions: creatingSmartConditions)
-                            listsVM.lists.append(info)
-                            newName = ""; newColor = .blue; newIcon = "list.bullet"; showCreate = false; isCreatingSmart = false
-                            creatingSmartMatchAll = true
-                            creatingSmartConditions = []
-                        }
-                        .disabled(newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    }
-                }
-
-                Section("Your Lists") {
-                    if listsVM.lists.isEmpty {
-                        Text("No lists yet").foregroundStyle(.secondary)
-                    } else {
-                        ForEach(listsVM.lists) { list in
-                            let selectionGradient = colorfulSelectionBackground
-
-                            ZStack(alignment: .leading) {
-                                HStack {
-                                    // Left count bubble
-                                    Group {
-                                        if list.id == ListsViewModel.recentlyDeletedID {
-                                            CountBubble(count: viewModel.recentlyDeleted.count)
-                                        } else if list.isSmart {
-                                            // Aggregate count for smart list by applying its conditions across all lists
-                                            let allIDs = listsVM.lists.map { $0.id }
-                                            // Build id->listName map to support list-name condition
-                                            var idToListName: [UUID: String] = [:]
-                                            var allDiscounts: [Discount] = []
-                                            for l in listsVM.lists {
-                                                let items = viewModel.loadDiscounts(for: l.id)
-                                                for it in items { idToListName[it.id] = l.name }
-                                                allDiscounts.append(contentsOf: items)
-                                            }
-                                            let matched = allDiscounts.filter { d in
-                                                list.matches(discount: d, listName: idToListName[d.id] ?? "")
-                                            }
-                                            CountBubble(count: matched.count)
-                                        } else {
-                                            CountBubble(count: viewModel.countForList(list.id))
-                                        }
-                                    }
-
-                                    Image.systemSymbolPreferringFill(list.iconName)
-                                        .foregroundStyle(list.color)
-                                    Text(list.name)
-                                    Spacer()
-                                    if listsVM.selectedListID == list.id {
-                                        Image(systemName: "checkmark.circle.fill").foregroundStyle(list.color)
-                                    }
-                                }
-                                .padding(8)
-                                .background(alignment: .leading) {
-                                    if list.isSmart {
-                                        Circle()
-                                            .fill(selectionGradient)
-                                            .frame(width: 8, height: 8)
-                                            .offset(x: -8)
-                                    }
-                                }
-                            }
-                            .listRowBackground(Color.clear)
-                            .contentShape(RoundedRectangle(cornerRadius: 12))
-                            .onTapGesture {
-                                if viewModel.isProUnlocked {
-                                    listsVM.selectedListID = list.id
-                                    withAnimation { listsVM.showingListsSheet = false }
-                                } else {
-                                    // Only allow selecting default "Coupons" list
-                                    if let defaultList = listsVM.lists.first(where: { $0.isDefault }), defaultList.id == list.id {
-                                        listsVM.selectedListID = list.id
-                                        withAnimation { listsVM.showingListsSheet = false }
-                                    } else {
-                                        showPro = true
-                                    }
-                                }
-                            }
-                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                Button(role: .destructive) {
-                                    if !viewModel.isProUnlocked {
-                                        showPro = true
-                                        return
-                                    }
-                                    // Prevent deleting last list
-                                    if listsVM.lists.count > 1 {
-                                        if let idx = listsVM.lists.firstIndex(where: { $0.id == list.id }) {
-                                            listsVM.delete(at: IndexSet(integer: idx))
-                                        }
-                                    }
-                                } label: { Label("Delete", systemImage: "trash") }
-
-                                Button {
-                                    if !viewModel.isProUnlocked {
-                                        showPro = true
-                                        return
-                                    }
-                                    editing = list
-                                } label: { Label("Edit", systemImage: "pencil") }
-                                .tint(.blue)
-                            }
-                        }
-                        .onMove(perform: { idx, newOffset in
-                            if !viewModel.isProUnlocked {
-                                showPro = true
-                                return
-                            }
-                            listsVM.lists.move(fromOffsets: idx, toOffset: newOffset)
-                        })
-
-                        // Spacer and fixed Recently Deleted row
-                        VStack(spacing: 8) {
-                            Color.clear.frame(height: 12)
-                            ZStack(alignment: .leading) {
-                                HStack {
-                                    // Left count bubble for Recently Deleted
-                                    CountBubble(count: viewModel.recentlyDeleted.count)
-                                    Image.systemSymbolPreferringFill("trash")
-                                        .foregroundStyle(Color.gray)
-                                    Text("Recently Deleted")
-                                    Spacer()
-                                    if listsVM.selectedListID == ListsViewModel.recentlyDeletedID {
-                                        Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.gray)
-                                    }
-                                }
-                                .padding(8)
-                            }
-                            .listRowBackground(Color.clear)
-                            .contentShape(RoundedRectangle(cornerRadius: 12))
-                            .onTapGesture {
-                                if viewModel.isProUnlocked {
-                                    listsVM.selectedListID = ListsViewModel.recentlyDeletedID
-                                    withAnimation { listsVM.showingListsSheet = false }
-                                } else {
-                                    showPro = true
-                                }
-                            }
-                        }
-                    }
-                }
+                proUpsellSection
+                newListButtonSection
+                createNewListSection
+                yourListsSection
             }
             .navigationTitle("Lists")
             .toolbar {
@@ -2715,6 +2520,178 @@ struct ListsManagerView: View {
             }
         }
     }
+    
+    @ViewBuilder
+    private var proUpsellSection: some View {
+        if !viewModel.isProUnlocked {
+            Section {
+                HStack {
+                    Spacer()
+                    VStack(spacing: 12) {
+                        Image(systemName: "crown.fill")
+                            .font(.system(size: 60))
+                            .foregroundStyle(.yellow)
+                        Text("Pro Feature")
+                            .font(.title3.bold())
+                        Text("Upgrade to Pro to manage lists")
+                            .multilineTextAlignment(.center)
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    showPro = true
+                }
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private var newListButtonSection: some View {
+        Section {
+            Button {
+                if !viewModel.isProUnlocked {
+                    showPro = true
+                    return
+                }
+                withAnimation { showCreate.toggle() }
+            } label: {
+                Label(showCreate ? "Hide New List" : "New List", systemImage: showCreate ? "chevron.down.circle" : "plus.circle")
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private var createNewListSection: some View {
+        if showCreate && viewModel.isProUnlocked {
+            Section("Create New List") {
+                TextField("Name", text: $newName)
+                ColorPicker("Color", selection: $newColor, supportsOpacity: false)
+                Picker("Icon", selection: $newIcon) {
+                    ForEach(Self.iconChoices, id: \.self) { name in
+                        Label { Text(name) } icon: { Image.systemSymbolPreferringFill(name) }
+                            .tag(name)
+                    }
+                }
+                Toggle("Smart List", isOn: $isCreatingSmart)
+                if isCreatingSmart {
+                    NavigationLink("Edit Smart Conditions") {
+                        let proxy = Binding<ListInfo>(
+                            get: {
+                                ListInfo(name: newName.isEmpty ? "New List" : newName, color: newColor, iconName: newIcon, isDefault: false, isSmart: true, smartMatchAll: creatingSmartMatchAll, smartConditions: creatingSmartConditions)
+                            },
+                            set: { updated in
+                                creatingSmartMatchAll = updated.smartMatchAll
+                                creatingSmartConditions = updated.smartConditions
+                            }
+                        )
+                        SmartListEditorView(list: proxy, onSave: nil)
+                    }
+                }
+                Button("Add List") {
+                    let info = ListInfo(name: newName.trimmingCharacters(in: .whitespacesAndNewlines), color: newColor, iconName: newIcon, isDefault: false, isSmart: isCreatingSmart, smartMatchAll: creatingSmartMatchAll, smartConditions: creatingSmartConditions)
+                    listsVM.lists.append(info)
+                    newName = ""; newColor = .blue; newIcon = "list.bullet"; showCreate = false; isCreatingSmart = false
+                    creatingSmartMatchAll = true
+                    creatingSmartConditions = []
+                }
+                .disabled(newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private var yourListsSection: some View {
+        Section("Your Lists") {
+            if listsVM.lists.isEmpty {
+                Text("No lists yet").foregroundStyle(.secondary)
+            } else {
+                listItemsView
+                recentlyDeletedRow
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private var listItemsView: some View {
+        ForEach(listsVM.lists) { list in
+            ListRowView(
+                list: list,
+                listsVM: listsVM,
+                viewModel: viewModel,
+                colorfulSelectionBackground: colorfulSelectionBackground,
+                onSelectList: { selectedList in
+                    if viewModel.isProUnlocked {
+                        listsVM.selectedListID = selectedList.id
+                        withAnimation { listsVM.showingListsSheet = false }
+                    } else {
+                        // Only allow selecting default "Coupons" list
+                        if let defaultList = listsVM.lists.first(where: { $0.isDefault }), defaultList.id == selectedList.id {
+                            listsVM.selectedListID = selectedList.id
+                            withAnimation { listsVM.showingListsSheet = false }
+                        } else {
+                            showPro = true
+                        }
+                    }
+                },
+                onEdit: { list in
+                    editing = list
+                },
+                onDelete: { list in
+                    if !viewModel.isProUnlocked {
+                        showPro = true
+                        return
+                    }
+                    // Prevent deleting last list
+                    if listsVM.lists.count > 1 {
+                        if let idx = listsVM.lists.firstIndex(where: { $0.id == list.id }) {
+                            listsVM.delete(at: IndexSet(integer: idx))
+                        }
+                    }
+                },
+                showPro: $showPro
+            )
+        }
+        .onMove(perform: { idx, newOffset in
+            if !viewModel.isProUnlocked {
+                showPro = true
+                return
+            }
+            listsVM.lists.move(fromOffsets: idx, toOffset: newOffset)
+        })
+    }
+    
+    @ViewBuilder
+    private var recentlyDeletedRow: some View {
+        VStack(spacing: 8) {
+            Color.clear.frame(height: 12)
+            ZStack(alignment: .leading) {
+                HStack {
+                    // Left count bubble for Recently Deleted
+                    CountBubble(count: viewModel.recentlyDeleted.count)
+                    Image.systemSymbolPreferringFill("trash")
+                        .foregroundStyle(Color.gray)
+                    Text("Recently Deleted")
+                    Spacer()
+                    if listsVM.selectedListID == ListsViewModel.recentlyDeletedID {
+                        Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.gray)
+                    }
+                }
+                .padding(8)
+            }
+            .listRowBackground(Color.clear)
+            .contentShape(RoundedRectangle(cornerRadius: 12))
+            .onTapGesture {
+                if viewModel.isProUnlocked {
+                    listsVM.selectedListID = ListsViewModel.recentlyDeletedID
+                    withAnimation { listsVM.showingListsSheet = false }
+                } else {
+                    showPro = true
+                }
+            }
+        }
+    }
 
     @State private var editing: ListInfo? = nil
 }
@@ -2729,6 +2706,86 @@ private struct CountBubble: View {
             .padding(.vertical, 4)
             .background(Capsule().fill(Color(.secondarySystemFill)))
             .foregroundStyle(.secondary)
+    }
+}
+
+private struct ListRowView: View {
+    let list: ListInfo
+    let listsVM: ListsViewModel
+    let viewModel: DiscountViewModel
+    let colorfulSelectionBackground: LinearGradient
+    let onSelectList: (ListInfo) -> Void
+    let onEdit: (ListInfo) -> Void
+    let onDelete: (ListInfo) -> Void
+    @Binding var showPro: Bool
+    
+    var body: some View {
+        ZStack(alignment: .leading) {
+            HStack {
+                listCountBubble
+                Image.systemSymbolPreferringFill(list.iconName)
+                    .foregroundStyle(list.color)
+                Text(list.name)
+                Spacer()
+                if listsVM.selectedListID == list.id {
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(list.color)
+                }
+            }
+            .padding(8)
+            .background(alignment: .leading) {
+                if list.isSmart {
+                    Circle()
+                        .fill(colorfulSelectionBackground)
+                        .frame(width: 8, height: 8)
+                        .offset(x: -8)
+                }
+            }
+        }
+        .listRowBackground(Color.clear)
+        .contentShape(RoundedRectangle(cornerRadius: 12))
+        .onTapGesture {
+            onSelectList(list)
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button(role: .destructive) {
+                onDelete(list)
+            } label: { Label("Delete", systemImage: "trash") }
+
+            Button {
+                if !viewModel.isProUnlocked {
+                    showPro = true
+                    return
+                }
+                onEdit(list)
+            } label: { Label("Edit", systemImage: "pencil") }
+            .tint(.blue)
+        }
+    }
+    
+    @ViewBuilder
+    private var listCountBubble: some View {
+        if list.id == ListsViewModel.recentlyDeletedID {
+            CountBubble(count: viewModel.recentlyDeleted.count)
+        } else if list.isSmart {
+            CountBubble(count: smartListCount)
+        } else {
+            CountBubble(count: viewModel.countForList(list.id))
+        }
+    }
+    
+    private var smartListCount: Int {
+        let allIDs = listsVM.lists.map { $0.id }
+        var idToListName: [UUID: String] = [:]
+        var allDiscounts: [Discount] = []
+        for l in listsVM.lists {
+            let items = viewModel.loadDiscounts(for: l.id)
+            for it in items { idToListName[it.id] = l.name }
+            allDiscounts.append(contentsOf: items)
+        }
+        let matched = allDiscounts.filter { d in
+            list.matches(discount: d, listName: idToListName[d.id] ?? "")
+        }
+        return matched.count
     }
 }
 
